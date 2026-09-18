@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        /* --- Your existing CSS (unchanged) --- */
+        /* --- All existing CSS (unchanged) --- */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -493,10 +493,10 @@
         .override-btn.clear { border-color: rgba(0, 230, 118, 0.2); color: #00e676; background: rgba(0, 230, 118, 0.05); }
         .override-btn.clear:hover { background: rgba(0, 230, 118, 0.15); }
 
-        /* --- Route Map (NEW) --- */
+        /* --- Route Map --- */
         .route-map-container {
             margin: 20px 0 24px 0;
-            height: 260px;
+            height: 280px;
             border-radius: 24px;
             overflow: hidden;
             border: 1px solid rgba(255,255,255,0.05);
@@ -507,7 +507,7 @@
             width: 100%;
         }
 
-        /* --- Route Stations (OLD, preserved) --- */
+        /* --- Route Stations (preserved) --- */
         .route-map-old {
             margin: 16px 0 20px 0;
             padding: 16px 0;
@@ -655,6 +655,54 @@
             gap: 8px;
         }
         .action-btn:hover { background: rgba(255,255,255,0.08); color: white; transform: translateY(-2px); }
+
+        /* Auto-Refresh Toggle */
+        .refresh-toggle {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            color: #a0b4d6;
+            padding: 6px 16px;
+            border-radius: 60px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .refresh-toggle:hover { background: rgba(255,255,255,0.1); color: white; }
+        .refresh-toggle.active { background: rgba(0, 230, 118, 0.12); border-color: #00e676; color: #00e676; }
+        .refresh-toggle .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            background: #4f6586;
+        }
+        .refresh-toggle.active .pulse-dot {
+            background: #00e676;
+            animation: dotPulse 1.2s ease-in-out infinite;
+        }
+
+        /* PDF Export Button */
+        .pdf-btn {
+            background: rgba(230, 57, 70, 0.1);
+            border: 1px solid rgba(230, 57, 70, 0.15);
+            color: #e63946;
+            padding: 8px 20px;
+            border-radius: 60px;
+            font-weight: 600;
+            font-size: 14px;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .pdf-btn:hover { background: rgba(230, 57, 70, 0.2); transform: scale(1.02); }
 
         /* Responsive */
         @media (max-width: 992px) {
@@ -809,7 +857,12 @@
     <div class="results-card" id="resultsCard">
         <div class="results-header">
             <h2 class="gradient-text">Search Results <small id="routeDisplay">Delhi → Mumbai</small></h2>
-            <span class="results-count" id="resultsCount">0 trains found</span>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                <span class="results-count" id="resultsCount">0 trains found</span>
+                <button class="refresh-toggle" id="refreshToggle" onclick="toggleAutoRefresh()">
+                    <span class="pulse-dot"></span> Auto-Refresh Off
+                </button>
+            </div>
         </div>
         <div id="backButtonContainer" style="margin-bottom:18px; display:none;">
             <button class="btn-back" onclick="clearResults()"><i class="fas fa-arrow-left"></i> Back to Search</button>
@@ -819,8 +872,9 @@
 
     <!-- DETAIL VIEW -->
     <div id="detailView">
-        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px;">
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px; align-items:center;">
             <button class="btn-back" onclick="showResults()"><i class="fas fa-arrow-left"></i> Back to Results</button>
+            <button class="pdf-btn" onclick="exportPDF()"><i class="fas fa-file-pdf"></i> Export PDF</button>
         </div>
         <div class="detail-card" id="detailCard"></div>
     </div>
@@ -832,14 +886,48 @@
 
 <!-- Leaflet JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- html2canvas + jsPDF -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
 <script>
-    // --- Global State ---
+    // ============================================================
+    // API BASE URL (FIXED)
+    // ============================================================
+    const API_BASE = 'http://127.0.0.1:5001';
+    console.log('🔗 API_BASE:', API_BASE);
+
+    // ============================================================
+    // HELPER: Format minutes to "Xh Ym"
+    // ============================================================
+    function formatDuration(minutes) {
+        const mins = Math.round(minutes);
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        if (h > 0) {
+            return `${h}h ${m}m`;
+        } else {
+            return `0h ${m}m`;
+        }
+    }
+
+    // ============================================================
+    // GLOBAL STATE
+    // ============================================================
     let isAdminMode = true;
     let currentResults = [];
     let currentDetailData = null;
     let mapInstance = null;
+    let mapMarker = null;
+    let mapAnimationId = null;
+    let autoRefreshInterval = null;
+    let currentSource = 'Delhi';
+    let currentDestination = 'Mumbai';
+    let currentDate = null;
 
-    // --- Date/Time ---
+    // ============================================================
+    // DATE/TIME
+    // ============================================================
     function updateDateTime() {
         const now = new Date();
         const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
@@ -847,7 +935,9 @@
     }
     updateDateTime();
 
-    // --- Mode Toggle ---
+    // ============================================================
+    // MODE TOGGLE
+    // ============================================================
     function toggleMode() {
         isAdminMode = !isAdminMode;
         const btn = document.getElementById('modeToggle');
@@ -867,10 +957,36 @@
     }
     document.body.classList.add('admin-mode');
 
-    // --- Load Home Data ---
+    // ============================================================
+    // AUTO-REFRESH
+    // ============================================================
+    function toggleAutoRefresh() {
+        const btn = document.getElementById('refreshToggle');
+        if (autoRefreshInterval) {
+            clearInterval(autoRefreshInterval);
+            autoRefreshInterval = null;
+            btn.classList.remove('active');
+            btn.innerHTML = '<span class="pulse-dot"></span> Auto-Refresh Off';
+        } else {
+            btn.classList.add('active');
+            btn.innerHTML = '<span class="pulse-dot"></span> Auto-Refresh On (30s)';
+            if (currentSource && currentDestination) {
+                searchTrains(true);
+            }
+            autoRefreshInterval = setInterval(() => {
+                if (currentSource && currentDestination) {
+                    searchTrains(true);
+                }
+            }, 30000);
+        }
+    }
+
+    // ============================================================
+    // LOAD HOME DATA
+    // ============================================================
     async function loadHomeData() {
         try {
-            const response = await fetch('http://127.0.0.1:5001/search_trains', {
+            const response = await fetch(API_BASE + '/search_trains', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source: 'Delhi', destination: 'Mumbai', date: new Date().toISOString().split('T')[0] })
@@ -923,7 +1039,9 @@
     window.addEventListener('DOMContentLoaded', loadHomeData);
     document.getElementById('dateInput').value = new Date().toISOString().split('T')[0];
 
-    // --- Tab Switching ---
+    // ============================================================
+    // TAB SWITCHING
+    // ============================================================
     function switchTab(tab) {
         document.getElementById('tabRoute').classList.toggle('active', tab === 'route');
         document.getElementById('tabTrain').classList.toggle('active', tab === 'train');
@@ -932,7 +1050,9 @@
         clearResults();
     }
 
-    // --- Quick Helpers ---
+    // ============================================================
+    // QUICK HELPERS
+    // ============================================================
     function quickSearch(source, dest) {
         document.getElementById('sourceInput').value = source;
         document.getElementById('destInput').value = dest;
@@ -945,21 +1065,34 @@
         searchByNumber();
     }
 
-    // --- API Calls ---
-    async function searchTrains() {
+    // ============================================================
+    // SEARCH TRAINS
+    // ============================================================
+    async function searchTrains(silent = false) {
         const source = document.getElementById('sourceInput').value.trim();
         const destination = document.getElementById('destInput').value.trim();
         const date = document.getElementById('dateInput').value;
-        if (!source || !destination) { showError('Please enter source and destination.'); return; }
-        showLoading('Searching for trains...');
+        
+        if (!source || !destination) { 
+            if (!silent) showError('Please enter source and destination.'); 
+            return; 
+        }
+        
+        currentSource = source;
+        currentDestination = destination;
+        currentDate = date;
+
+        if (!silent) showLoading('Searching for trains...');
+        
         try {
-            const resp = await fetch('http://127.0.0.1:5001/search_trains', {
+            const resp = await fetch(API_BASE + '/search_trains', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source, destination, date })
             });
             const result = await resp.json();
-            hideLoading();
+            if (!silent) hideLoading();
+            
             if (result.status === "success") {
                 currentResults = result.trains || [];
                 document.getElementById('routeDisplay').textContent = `${result.source_name || source} → ${result.destination_name || destination}`;
@@ -998,16 +1131,24 @@
                 document.getElementById('resultsCard').classList.add('visible');
                 document.getElementById('detailView').classList.remove('visible');
                 document.getElementById('detailView').style.display = 'none';
-            } else { showError(result.message || 'Search failed'); }
-        } catch (e) { hideLoading(); showError('Server connection failed.'); console.error(e); }
+            } else { 
+                if (!silent) showError(result.message || 'Search failed'); 
+            }
+        } catch (e) { 
+            if (!silent) { hideLoading(); showError('Server connection failed. Make sure Flask is running on ' + API_BASE); } 
+            console.error(e); 
+        }
     }
 
+    // ============================================================
+    // SEARCH BY NUMBER
+    // ============================================================
     async function searchByNumber() {
         const num = document.getElementById('trainNumberInput').value.trim();
         if (!num) { showError('Please enter a train number.'); return; }
         showLoading('Fetching train details...');
         try {
-            const resp = await fetch('http://127.0.0.1:5001/train_by_number', {
+            const resp = await fetch(API_BASE + '/train_by_number', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ train_number: num })
@@ -1037,17 +1178,24 @@
                 document.getElementById('detailView').classList.remove('visible');
                 document.getElementById('detailView').style.display = 'none';
             } else { showError(result.message || 'Train not found'); }
-        } catch (e) { hideLoading(); showError('Server connection failed.'); console.error(e); }
+        } catch (e) { hideLoading(); showError('Server connection failed. Make sure Flask is running on ' + API_BASE); console.error(e); }
     }
 
-    // --- Show Detail ---
+    // ============================================================
+    // SHOW DETAIL
+    // ============================================================
     async function showDetail(trainNumber, source, destination) {
+        if (mapAnimationId) {
+            cancelAnimationFrame(mapAnimationId);
+            mapAnimationId = null;
+        }
+        
         showLoading('Loading complete train details...');
         document.getElementById('resultsCard').classList.remove('visible');
         document.getElementById('detailView').style.display = 'none';
         document.getElementById('detailView').classList.remove('visible');
         try {
-            const resp = await fetch('http://127.0.0.1:5001/train_detail', {
+            const resp = await fetch(API_BASE + '/train_detail', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ train_number: trainNumber, source, destination })
@@ -1061,251 +1209,224 @@
                 document.getElementById('detailView').classList.add('visible');
                 document.getElementById('detailView').scrollIntoView({ behavior: 'smooth', block: 'start' });
             } else { showError(train.message || 'Failed to load detail'); }
-        } catch (e) { hideLoading(); showError('Server connection failed.'); console.error(e); }
+        } catch (e) { hideLoading(); showError('Server connection failed. Make sure Flask is running on ' + API_BASE); console.error(e); }
     }
 
-    // --- Render Detail (FIXED: map separate, route display preserved) ---
+    // ============================================================
+    // RENDER DETAIL (with formatting fixes)
+    // ============================================================
     function renderDetail(train) {
-    const card = document.getElementById('detailCard');
-    const isAdmin = isAdminMode;
+        const card = document.getElementById('detailCard');
+        const isAdmin = isAdminMode;
 
-    // --- NEW: Next Station Info ---
-    const next = train.next_station || null;
-    let nextStationHtml = '';
-    if (next) {
-        nextStationHtml = `
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:16px; margin:16px 0 24px 0; padding:16px 20px; background: rgba(255,255,255,0.02); border-radius:20px; border:1px solid rgba(255,255,255,0.04);">
-                <div>
-                    <div style="color:#5a6f92;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Next Stop</div>
-                    <div style="color:white;font-size:20px;font-weight:700;margin-top:4px;">${next.station_name} <span style="color:#7e94b9;font-size:14px;font-weight:400;">(${next.station_code})</span></div>
-                    <div style="color:#4f6586;font-size:13px;margin-top:2px;">${next.distance_to_next_km} km away</div>
+        // Format durations
+        const journeyTimeFormatted = formatDuration(train.minutes_remaining);
+        const staticTimeFormatted = formatDuration(train.distance_remaining / 50 * 60); // approximate static
+        const ourPredictionFormatted = formatDuration(train.minutes_remaining);
+
+        // Remove seconds from predicted arrival
+        let arrivalDisplay = train.predicted_arrival;
+        if (arrivalDisplay) {
+            arrivalDisplay = arrivalDisplay.substring(0, 16); // keep YYYY-MM-DD HH:MM
+        }
+
+        // Delay causes
+        let causesHtml = train.delay_causes && train.delay_causes.length > 0 ? 
+            train.delay_causes.map(c => `<li>${c}</li>`).join('') : '<li>Normal running conditions</li>';
+
+        // Route display
+        let routeHtml = '';
+        if (train.full_route) {
+            train.full_route.forEach((station, idx) => {
+                const isCurrent = station.is_current;
+                const currentClass = isCurrent ? 'current' : '';
+                const weatherIcon = station.icon || 'fa-sun';
+                const weatherColor = station.color || '#00e676';
+                routeHtml += `
+                    <div class="station-node ${currentClass}">
+                        <div class="code">${station.code}</div>
+                        <div class="name">${station.name}</div>
+                        <div class="weather-icon" style="color: ${weatherColor}"><i class="fas ${weatherIcon}"></i></div>
+                        <div class="scheduled">${station.scheduled_time}</div>
+                    </div>
+                `;
+                if (idx < train.full_route.length - 1) {
+                    routeHtml += `<span class="route-arrow"><i class="fas fa-chevron-right"></i></span>`;
+                }
+            });
+        }
+
+        // Station ETAs
+        let etaTableHtml = '';
+        if (train.station_etas && train.station_etas.length > 0) {
+            train.station_etas.forEach(s => {
+                const delayClass = s.delay_mins > 5 ? 'delayed' : 'on-time';
+                const delayText = s.delay_mins > 0 ? `${Math.round(s.delay_mins)}m` : 'On Time';
+                let historyHtml = '';
+                if (s.historical_data && s.historical_data.length > 0) {
+                    const last3 = s.historical_data.slice(-3);
+                    historyHtml = last3.map(h => {
+                        let color = '#00e676';
+                        if (h.delay_minutes > 5) color = '#ff6b6b';
+                        else if (h.delay_minutes < -5) color = '#4fc3f7';
+                        return `<span class="history-pill" style="border-color: ${color}33;">
+                            <span class="day" style="color:${color};">${h.day}</span>
+                            <span class="time" style="color:${color};">${h.actual_time}</span>
+                        </span>`;
+                    }).join(' ');
+                    const avgDelay = s.average_delay || 0;
+                    const avgColor = avgDelay > 5 ? '#ff6b6b' : avgDelay < -5 ? '#4fc3f7' : '#00e676';
+                    const avgText = avgDelay > 5 ? `+${Math.round(avgDelay)}m` : avgDelay < -5 ? `${Math.round(avgDelay)}m` : 'On Time';
+                    historyHtml += `<span class="history-avg" style="color:${avgColor};">📊 Avg: ${avgText} (${s.average_time || 'N/A'})</span>`;
+                } else {
+                    historyHtml = '<span style="color: #4f6586; font-size: 12px;">No history</span>';
+                }
+                etaTableHtml += `
+                    <tr>
+                        <td><strong>${s.station_code}</strong></td>
+                        <td>${s.station_name}</td>
+                        <td>${s.scheduled_time}</td>
+                        <td style="color: #ffc107; font-weight: 500;">${s.predicted_time}</td>
+                        <td class="${delayClass}"><span class="delay-badge-small ${delayClass}">${delayText}</span></td>
+                        <td><div class="history-pills">${historyHtml}</div></td>
+                    </tr>
+                `;
+            });
+        }
+
+        // Weather Alerts
+        let weatherHtml = '';
+        if (train.weather_alerts && train.weather_alerts.length > 0) {
+            weatherHtml = train.weather_alerts.map(a => `
+                <div class="weather-alert-item">
+                    <span style="color: ${a.color}"><i class="fas ${a.icon}"></i></span>
+                    ${a.station_name}
+                    <span class="delay-badge">+${a.extra_delay_mins}m</span>
+                    <span style="color: #7e94b9; font-size: 14px;">(${a.condition})</span>
                 </div>
-                <div>
-                    <div style="color:#5a6f92;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">⏱️ Time to Next Stop</div>
-                    <div style="color:#ffc107;font-size:22px;font-weight:700;margin-top:4px;">${next.time_to_next_mins} <span style="color:#7e94b9;font-size:14px;font-weight:400;">mins</span></div>
+            `).join('');
+        } else {
+            weatherHtml = '<div style="color: #7e94b9; font-size: 15px;">✓ No significant weather delays ahead</div>';
+        }
+
+        const conf = Math.round(train.confidence_score * 100);
+
+        // Build detail HTML with updated formatting
+        card.innerHTML = `
+            <div id="pdfContent">
+                <div class="detail-header">
+                    <div class="detail-train-info">
+                        <h2 class="gradient-text">${train.train_name} <small>#${train.train_number}</small></h2>
+                        <span class="train-type">${train.train_type} • ${train.source_name} → ${train.destination_name}</span>
+                        ${train.is_weekend ? '<span style="color:#ffc107;font-size:13px;font-weight:600;margin-left:10px;">📅 Weekend Service</span>' : ''}
+                        ${train.override_applied > 0 ? '<span style="color:#ff6b6b;font-size:13px;font-weight:600;margin-left:10px;">🚨 Override Active</span>' : ''}
+                    </div>
+                    <div class="detail-status" style="background: ${train.delay_status_color}15; color: ${train.delay_status_color}; border-color: ${train.delay_status_color}30;">
+                        ${train.delay_status} (${train.current_delay}m)
+                    </div>
                 </div>
-                <div>
-                    <div style="color:#5a6f92;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Scheduled Arrival</div>
-                    <div style="color:#7e94b9;font-size:18px;font-weight:600;margin-top:4px;">${next.scheduled_time}</div>
+
+                <div class="detail-metrics">
+                    <div class="detail-metric">
+                        <div class="label"><i class="fas fa-hourglass-half"></i> Journey Time Left</div>
+                        <div class="value">${journeyTimeFormatted}</div>
+                    </div>
+                    <div class="detail-metric">
+                        <div class="label"><i class="fas fa-route"></i> Distance to Go</div>
+                        <div class="value">${train.distance_remaining} <span class="unit">km</span></div>
+                    </div>
+                    <div class="detail-metric">
+                        <div class="label"><i class="fas fa-location-dot"></i> Current Location</div>
+                        <div class="value">${train.current_location_name}</div>
+                    </div>
+                    <div class="detail-metric">
+                        <div class="label"><i class="fas fa-calendar"></i> Predicted Arrival</div>
+                        <div class="value" style="font-size: 20px;">${arrivalDisplay}</div>
+                    </div>
                 </div>
-                <div>
-                    <div style="color:#5a6f92;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">📊 AI Prediction</div>
-                    <div style="color:#00e676;font-size:18px;font-weight:600;margin-top:4px;">${next.predicted_time}</div>
-                    <div style="color:#4f6586;font-size:12px;">${next.static_schedule_mins > 0 ? `Static: ~${Math.round(next.static_schedule_mins)} mins` : ''}</div>
+
+                <div class="comparison-card">
+                    <div>
+                        <span class="label"><i class="far fa-clock"></i> Static Schedule</span>
+                        <span class="value" style="color:#7e94b9;font-size:18px;margin-left:12px;">~${staticTimeFormatted}</span>
+                    </div>
+                    <div>
+                        <span class="label"><i class="fas fa-brain"></i> Our Prediction</span>
+                        <span class="value" style="color:#ffc107;font-size:18px;margin-left:12px;">${ourPredictionFormatted}</span>
+                    </div>
+                    <div>
+                        <span class="label"><i class="fas fa-check-circle"></i> Savings</span>
+                        <span class="value savings">${train.savings_minutes > 0 ? `${Math.round(train.savings_minutes)}m earlier` : 'On Time'}</span>
+                    </div>
+                </div>
+
+                <div class="route-map-old">
+                    <h4><i class="fas fa-map"></i> Route & Weather Forecast</h4>
+                    <div class="route-stations-detailed">${routeHtml}</div>
+                </div>
+
+                <div style="margin: 16px 0 4px;">
+                    <h4 style="color:#a0b4d6;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:12px;">
+                        <i class="fas fa-globe-asia"></i> Interactive Route Map
+                    </h4>
+                    <div class="route-map-container" id="routeMapContainer"></div>
+                </div>
+
+                <div class="station-etas">
+                    <h4><i class="fas fa-clock"></i> Station Arrival Times</h4>
+                    ${etaTableHtml ? `
+                        <table>
+                            <thead><tr><th>Station</th><th>Full Name</th><th>Scheduled</th><th>Predicted</th><th>Delay</th><th style="min-width:200px;">Last 7 Days &amp; Avg</th></tr></thead>
+                            <tbody>${etaTableHtml}</tbody>
+                        </table>
+                    ` : '<div style="color: #7e94b9; padding: 16px;">No station ETAs available</div>'}
+                </div>
+
+                <div class="weather-alerts">
+                    <h4><i class="fas fa-cloud-sun-rain"></i> Weather Impact</h4>
+                    ${weatherHtml}
+                </div>
+
+                <div class="delay-causes">
+                    <h4><i class="fas fa-triangle-exclamation"></i> Causes of Delay</h4>
+                    <ul>${causesHtml}</ul>
+                </div>
+
+                <div class="confidence-bar">
+                    <div class="header"><span><i class="fas fa-chart-line"></i> Prediction Confidence</span><span>${conf}%</span></div>
+                    <div class="track"><div class="fill" style="width: ${conf}%;"></div></div>
+                </div>
+
+                <div class="hidden-passenger" style="margin-top: 24px;">
+                    <div class="override-section">
+                        <h4><i class="fas fa-exclamation-triangle"></i> Emergency Override (Admin Only)</h4>
+                        <div class="btn-group">
+                            <button class="override-btn" onclick="applyOverride(${train.train_number}, 15)">+15 min</button>
+                            <button class="override-btn" onclick="applyOverride(${train.train_number}, 30)">+30 min</button>
+                            <button class="override-btn" onclick="applyOverride(${train.train_number}, 60)">+60 min</button>
+                            <button class="override-btn clear" onclick="applyOverride(${train.train_number}, 0)">Clear Override</button>
+                        </div>
+                    </div>
+                    <div class="action-buttons">
+                        <button class="action-btn" onclick="exportCSV(${train.train_number})"><i class="fas fa-file-csv"></i> Export Report (CSV)</button>
+                    </div>
                 </div>
             </div>
         `;
-    } else {
-        nextStationHtml = `
-            <div style="color:#7e94b9;padding:12px 0;font-size:15px;text-align:center;">
-                🏁 Train has reached its destination or no next stop available
-            </div>
-        `;
+
+        setTimeout(() => initMapWithAnimation(train), 150);
     }
 
-    // --- Delay Causes ---
-    let causesHtml = train.delay_causes && train.delay_causes.length > 0 ? 
-        train.delay_causes.map(c => `<li>${c}</li>`).join('') : '<li>Normal running conditions</li>';
+    // ============================================================
+    // LEAFET MAP WITH ANIMATION (unchanged)
+    // ============================================================
+    let routeCoordinates = [];
+    let routeStations = [];
+    let currentIndex = 0;
+    let marker = null;
+    let polyline = null;
 
-    // --- Route display ---
-    let routeHtml = '';
-    if (train.full_route) {
-        train.full_route.forEach((station, idx) => {
-            const isCurrent = station.is_current;
-            const currentClass = isCurrent ? 'current' : '';
-            const weatherIcon = station.icon || 'fa-sun';
-            const weatherColor = station.color || '#00e676';
-            routeHtml += `
-                <div class="station-node ${currentClass}">
-                    <div class="code">${station.code}</div>
-                    <div class="name">${station.name}</div>
-                    <div class="weather-icon" style="color: ${weatherColor}"><i class="fas ${weatherIcon}"></i></div>
-                    <div class="scheduled">${station.scheduled_time}</div>
-                </div>
-            `;
-            if (idx < train.full_route.length - 1) {
-                routeHtml += `<span class="route-arrow"><i class="fas fa-chevron-right"></i></span>`;
-            }
-        });
-    }
-
-    // --- Station ETAs ---
-    let etaTableHtml = '';
-    if (train.station_etas && train.station_etas.length > 0) {
-        train.station_etas.forEach(s => {
-            const delayClass = s.delay_mins > 5 ? 'delayed' : 'on-time';
-            const delayText = s.delay_mins > 0 ? `${Math.round(s.delay_mins)}m` : 'On Time';
-            let historyHtml = '';
-            if (s.historical_data && s.historical_data.length > 0) {
-                const last3 = s.historical_data.slice(-3);
-                historyHtml = last3.map(h => {
-                    let color = '#00e676';
-                    if (h.delay_minutes > 5) color = '#ff6b6b';
-                    else if (h.delay_minutes < -5) color = '#4fc3f7';
-                    return `<span class="history-pill" style="border-color: ${color}33;">
-                        <span class="day" style="color:${color};">${h.day}</span>
-                        <span class="time" style="color:${color};">${h.actual_time}</span>
-                    </span>`;
-                }).join(' ');
-                const avgDelay = s.average_delay || 0;
-                const avgColor = avgDelay > 5 ? '#ff6b6b' : avgDelay < -5 ? '#4fc3f7' : '#00e676';
-                const avgText = avgDelay > 5 ? `+${Math.round(avgDelay)}m` : avgDelay < -5 ? `${Math.round(avgDelay)}m` : 'On Time';
-                historyHtml += `<span class="history-avg" style="color:${avgColor};">📊 Avg: ${avgText} (${s.average_time || 'N/A'})</span>`;
-            } else {
-                historyHtml = '<span style="color: #4f6586; font-size: 12px;">No history</span>';
-            }
-            etaTableHtml += `
-                <tr>
-                    <td><strong>${s.station_code}</strong></td>
-                    <td>${s.station_name}</td>
-                    <td>${s.scheduled_time}</td>
-                    <td style="color: #ffc107; font-weight: 500;">${s.predicted_time}</td>
-                    <td class="${delayClass}"><span class="delay-badge-small ${delayClass}">${delayText}</span></td>
-                    <td><div class="history-pills">${historyHtml}</div></td>
-                </tr>
-            `;
-        });
-    }
-
-    // --- Weather Alerts ---
-    let weatherHtml = '';
-    if (train.weather_alerts && train.weather_alerts.length > 0) {
-        weatherHtml = train.weather_alerts.map(a => `
-            <div class="weather-alert-item">
-                <span style="color: ${a.color}"><i class="fas ${a.icon}"></i></span>
-                ${a.station_name}
-                <span class="delay-badge">+${a.extra_delay_mins}m</span>
-                <span style="color: #7e94b9; font-size: 14px;">(${a.condition})</span>
-            </div>
-        `).join('');
-    } else {
-        weatherHtml = '<div style="color: #7e94b9; font-size: 15px;">✓ No significant weather delays ahead</div>';
-    }
-
-    const conf = Math.round(train.confidence_score * 100);
-
-    // --- Build the full HTML ---
-    card.innerHTML = `
-        <div class="detail-header">
-            <div class="detail-train-info">
-                <h2 class="gradient-text">${train.train_name} <small>#${train.train_number}</small></h2>
-                <span class="train-type">${train.train_type} • ${train.source_name} → ${train.destination_name}</span>
-                ${train.is_weekend ? '<span style="color:#ffc107;font-size:13px;font-weight:600;margin-left:10px;">📅 Weekend Service</span>' : ''}
-                ${train.override_applied > 0 ? '<span style="color:#ff6b6b;font-size:13px;font-weight:600;margin-left:10px;">🚨 Override Active</span>' : ''}
-            </div>
-            <div class="detail-status" style="background: ${train.delay_status_color}15; color: ${train.delay_status_color}; border-color: ${train.delay_status_color}30;">
-                ${train.delay_status} (${train.current_delay}m)
-            </div>
-        </div>
-
-        <div class="detail-metrics">
-            <div class="detail-metric">
-                <div class="label"><i class="fas fa-hourglass-half"></i> Total Journey Remaining</div>
-                <div class="value">${train.minutes_remaining} <span class="unit">mins</span></div>
-            </div>
-            <div class="detail-metric">
-                <div class="label"><i class="fas fa-route"></i> Total Distance to Go</div>
-                <div class="value">${train.distance_remaining} <span class="unit">km</span></div>
-            </div>
-            <div class="detail-metric">
-                <div class="label"><i class="fas fa-location-dot"></i> Current Location</div>
-                <div class="value">${train.current_location_name}</div>
-            </div>
-            <div class="detail-metric">
-                <div class="label"><i class="fas fa-calendar"></i> Final Destination ETA</div>
-                <div class="value" style="font-size: 20px;">${train.predicted_arrival}</div>
-            </div>
-        </div>
-
-        <!-- NEW: Next Station Info -->
-        <div style="margin: 8px 0 4px;">
-            <h4 style="color:#a0b4d6;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:12px;">
-                <i class="fas fa-arrow-right" style="color:#e63946;"></i> Next Station Details
-            </h4>
-            ${nextStationHtml}
-        </div>
-
-        <!-- Comparison Card -->
-        <div class="comparison-card">
-            <div>
-                <span class="label"><i class="far fa-clock"></i> Static Schedule (To Destination)</span>
-                <span class="value" style="color:#7e94b9;font-size:18px;margin-left:12px;">~${Math.round(train.distance_remaining/50*60)} mins</span>
-            </div>
-            <div>
-                <span class="label"><i class="fas fa-brain"></i> Our Prediction (To Destination)</span>
-                <span class="value" style="color:#ffc107;font-size:18px;margin-left:12px;">${Math.round(train.minutes_remaining)} mins</span>
-            </div>
-            <div>
-                <span class="label"><i class="fas fa-check-circle"></i> Savings</span>
-                <span class="value savings">${train.savings_minutes > 0 ? `${Math.round(train.savings_minutes)}m earlier` : 'On Time'}</span>
-            </div>
-        </div>
-
-        <!-- Route Display -->
-        <div class="route-map-old">
-            <h4><i class="fas fa-map"></i> Route & Weather Forecast</h4>
-            <div class="route-stations-detailed">${routeHtml}</div>
-        </div>
-
-        <!-- Interactive Map -->
-        <div style="margin: 16px 0 4px;">
-            <h4 style="color:#a0b4d6;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:12px;">
-                <i class="fas fa-globe-asia"></i> Interactive Route Map
-            </h4>
-            <div class="route-map-container" id="routeMapContainer"></div>
-        </div>
-
-        <!-- Station ETAs -->
-        <div class="station-etas">
-            <h4><i class="fas fa-clock"></i> Station Arrival Times</h4>
-            ${etaTableHtml ? `
-                <table>
-                    <thead><tr><th>Station</th><th>Full Name</th><th>Scheduled</th><th>Predicted</th><th>Delay</th><th style="min-width:200px;">Last 7 Days &amp; Avg</th></tr></thead>
-                    <tbody>${etaTableHtml}</tbody>
-                </table>
-            ` : '<div style="color: #7e94b9; padding: 16px;">No station ETAs available</div>'}
-        </div>
-
-        <!-- Weather & Delay -->
-        <div class="weather-alerts">
-            <h4><i class="fas fa-cloud-sun-rain"></i> Weather Impact</h4>
-            ${weatherHtml}
-        </div>
-
-        <div class="delay-causes">
-            <h4><i class="fas fa-triangle-exclamation"></i> Causes of Delay</h4>
-            <ul>${causesHtml}</ul>
-        </div>
-
-        <!-- Confidence -->
-        <div class="confidence-bar">
-            <div class="header"><span><i class="fas fa-chart-line"></i> Prediction Confidence</span><span>${conf}%</span></div>
-            <div class="track"><div class="fill" style="width: ${conf}%;"></div></div>
-        </div>
-
-        <!-- Admin Controls -->
-        <div class="hidden-passenger" style="margin-top: 24px;">
-            <div class="override-section">
-                <h4><i class="fas fa-exclamation-triangle"></i> Emergency Override (Admin Only)</h4>
-                <div class="btn-group">
-                    <button class="override-btn" onclick="applyOverride(${train.train_number}, 15)">+15 min</button>
-                    <button class="override-btn" onclick="applyOverride(${train.train_number}, 30)">+30 min</button>
-                    <button class="override-btn" onclick="applyOverride(${train.train_number}, 60)">+60 min</button>
-                    <button class="override-btn clear" onclick="applyOverride(${train.train_number}, 0)">Clear Override</button>
-                </div>
-            </div>
-            <div class="action-buttons">
-                <button class="action-btn" onclick="exportCSV(${train.train_number})"><i class="fas fa-file-csv"></i> Export Report (CSV)</button>
-            </div>
-        </div>
-    `;
-
-    // Initialize Leaflet map
-    setTimeout(() => initMap(train), 150);
-}
-
-    // --- Leaflet Map ---
-    function initMap(train) {
+    function initMapWithAnimation(train) {
         const container = document.getElementById('routeMapContainer');
         if (!container) return;
         if (mapInstance) {
@@ -1317,15 +1438,19 @@
             container.innerHTML = '<div style="color:#7e94b9;padding:20px;text-align:center;">Route map unavailable</div>';
             return;
         }
-        // Dummy coordinates spanning India
+
         const baseLat = 20.5937, baseLng = 78.9629;
         const coords = stations.map((s, idx) => {
             const spread = (idx / (stations.length - 1)) * 10 - 5;
-            return [baseLat + spread * 1.2 + (Math.random() - 0.5) * 0.5, baseLng + spread * 1.5 + (Math.random() - 0.5) * 0.5];
+            return [baseLat + spread * 1.2 + (Math.random() - 0.5) * 0.3, baseLng + spread * 1.5 + (Math.random() - 0.5) * 0.3];
         });
 
         let currentIdx = stations.findIndex(s => s.is_current);
         if (currentIdx === -1) currentIdx = 0;
+        
+        routeCoordinates = coords;
+        routeStations = stations;
+        currentIndex = currentIdx;
 
         mapInstance = L.map(container).setView(coords[currentIdx] || coords[0], 5);
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -1334,58 +1459,137 @@
             maxZoom: 19
         }).addTo(mapInstance);
 
-        const polyline = L.polyline(coords, { color: '#e63946', weight: 4, opacity: 0.8 }).addTo(mapInstance);
+        polyline = L.polyline(coords, { color: '#e63946', weight: 4, opacity: 0.6 }).addTo(mapInstance);
 
         coords.forEach((pos, idx) => {
-            const isCurrent = idx === currentIdx;
             const station = stations[idx] || { code: 'STA', name: 'Station' };
-            const marker = L.circleMarker(pos, {
-                radius: isCurrent ? 10 : 6,
+            const isCurrent = idx === currentIdx;
+            L.circleMarker(pos, {
+                radius: isCurrent ? 8 : 5,
                 fillColor: isCurrent ? '#ffc107' : '#4fc3f7',
                 color: isCurrent ? '#ffffff' : '#4fc3f7',
                 weight: 2,
                 opacity: 1,
                 fillOpacity: 0.8
-            }).addTo(mapInstance);
-            marker.bindPopup(`<b>${station.code}</b><br>${station.name}${isCurrent ? ' (Current)' : ''}`);
-            if (isCurrent) {
-                L.circleMarker(pos, {
-                    radius: 16,
-                    color: '#ffc107',
-                    weight: 1,
-                    opacity: 0.5,
-                    fillOpacity: 0.1
-                }).addTo(mapInstance);
-            }
+            }).addTo(mapInstance).bindPopup(`<b>${station.code}</b><br>${station.name}${isCurrent ? ' (Current)' : ''}`);
         });
 
-        mapInstance.fitBounds(polyline.getBounds(), { padding: [30, 30] });
-    }
+        marker = L.circleMarker(coords[currentIdx], {
+            radius: 10,
+            fillColor: '#e63946',
+            color: '#ffffff',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.9
+        }).addTo(mapInstance);
+        marker.bindPopup(`<b>${train.train_name}</b><br>Current: ${train.current_location_name}`);
 
-    // --- Override ---
-    async function applyOverride(trainNumber, minutes) {
-        try {
-            const resp = await fetch('http://127.0.0.1:5001/override_delay', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ train_number: String(trainNumber), extra_minutes: minutes })
-            });
-            const result = await resp.json();
-            if (result.status === "success") {
-                const train = currentDetailData;
-                if (train) {
-                    showDetail(train.train_number, train.source, train.destination);
-                }
-            } else {
-                alert('Override failed: ' + result.message);
-            }
-        } catch (e) {
-            alert('Error applying override.');
-            console.error(e);
+        mapInstance.fitBounds(polyline.getBounds(), { padding: [30, 30] });
+
+        if (currentIdx < coords.length - 1) {
+            animateTrain(coords, currentIdx);
         }
     }
 
-    // --- Export CSV ---
+    function animateTrain(coords, startIdx) {
+        if (mapAnimationId) {
+            cancelAnimationFrame(mapAnimationId);
+        }
+        
+        let currentPos = startIdx;
+        let progress = 0;
+        const duration = 5000;
+        
+        function step(timestamp) {
+            if (!marker || !mapInstance) return;
+            
+            if (currentPos >= coords.length - 1) {
+                return;
+            }
+            
+            const start = coords[currentPos];
+            const end = coords[currentPos + 1];
+            const speed = 1 / (duration / 16);
+            
+            progress += speed;
+            
+            if (progress >= 1) {
+                progress = 0;
+                currentPos++;
+                if (currentPos >= coords.length - 1) {
+                    marker.setLatLng(end);
+                    return;
+                }
+            }
+            
+            const lat = start[0] + (end[0] - start[0]) * Math.min(progress, 1);
+            const lng = start[1] + (end[1] - start[1]) * Math.min(progress, 1);
+            marker.setLatLng([lat, lng]);
+            
+            mapAnimationId = requestAnimationFrame(step);
+        }
+        
+        mapAnimationId = requestAnimationFrame(step);
+    }
+
+    // ============================================================
+    // EXPORT PDF (unchanged)
+    // ============================================================
+    function exportPDF() {
+        const element = document.getElementById('pdfContent');
+        if (!element) {
+            alert('No data to export. Please view a train first.');
+            return;
+        }
+
+        const btn = document.querySelector('.pdf-btn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating PDF...';
+        btn.disabled = true;
+
+        html2canvas(element, {
+            scale: 2,
+            backgroundColor: '#080c18',
+            allowTaint: true,
+            useCORS: true,
+            logging: false,
+            height: element.scrollHeight,
+            windowHeight: element.scrollHeight
+        }).then(canvas => {
+            const imgData = canvas.toDataURL('image/png');
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const imgWidth = 210;
+            const imgHeight = (canvas.height * imgWidth) / canvas.width;
+            
+            let heightLeft = imgHeight;
+            let position = 0;
+            
+            pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+            heightLeft -= pdf.internal.pageSize.height;
+            
+            while (heightLeft > 0) {
+                position = heightLeft - imgHeight;
+                pdf.addPage();
+                pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+                heightLeft -= pdf.internal.pageSize.height;
+            }
+            
+            pdf.save(`Train_${currentDetailData?.train_number || 'Report'}_ETA_Report.pdf`);
+            
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }).catch(err => {
+            console.error('PDF generation failed:', err);
+            alert('Failed to generate PDF. Please try again.');
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        });
+    }
+
+    // ============================================================
+    // EXPORT CSV
+    // ============================================================
     function exportCSV(trainNumber) {
         const train = currentDetailData;
         if (!train || !train.station_etas) {
@@ -1406,7 +1610,34 @@
         URL.revokeObjectURL(url);
     }
 
-    // --- UI Helpers ---
+    // ============================================================
+    // OVERRIDE
+    // ============================================================
+    async function applyOverride(trainNumber, minutes) {
+        try {
+            const resp = await fetch(API_BASE + '/override_delay', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ train_number: String(trainNumber), extra_minutes: minutes })
+            });
+            const result = await resp.json();
+            if (result.status === "success") {
+                const train = currentDetailData;
+                if (train) {
+                    showDetail(train.train_number, train.source, train.destination);
+                }
+            } else {
+                alert('Override failed: ' + result.message);
+            }
+        } catch (e) {
+            alert('Error applying override.');
+            console.error(e);
+        }
+    }
+
+    // ============================================================
+    // UI HELPERS
+    // ============================================================
     function showLoading(text) {
         const spinner = document.getElementById('loadingSpinner');
         document.getElementById('loadingText').textContent = text || 'Loading...';
@@ -1438,6 +1669,14 @@
         document.getElementById('detailView').style.display = 'none';
         document.getElementById('errorDisplay').style.display = 'none';
         document.getElementById('sourceInput').focus();
+        
+        if (autoRefreshInterval) {
+            clearInterval(autoRefreshInterval);
+            autoRefreshInterval = null;
+            const btn = document.getElementById('refreshToggle');
+            btn.classList.remove('active');
+            btn.innerHTML = '<span class="pulse-dot"></span> Auto-Refresh Off';
+        }
     }
 
     // Enter key support
